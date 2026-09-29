@@ -228,7 +228,7 @@ export default function AdminPage() {
             </div>
             <div>
               <h1 className="text-lg font-bold text-slate-900 tracking-tight">Admin Dashboard</h1>
-              <p className="text-xs text-slate-500 font-medium">Krishna Store • Management Console</p>
+              <p className="text-xs text-slate-500 font-medium">Ghanshyam Enterprises • Management Console</p>
             </div>
           </div>
           <Link
