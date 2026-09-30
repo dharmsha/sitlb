@@ -12,7 +12,8 @@ import {
   groupByYear,
   getTopProducts,
 } from "@/lib/billDatabase";
-import { getProducts, deleteProduct, addProduct } from "@/lib/productDatabase";
+import { getProducts, deleteProduct, addProduct, increaseStock } from "@/lib/productDatabase";
+import { getAllMovements, getMovementsByRange, getDailySummary } from "@/lib/stockDatabase";
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -28,16 +29,39 @@ export default function AdminPage() {
   const [selectedBill, setSelectedBill] = useState<any>(null);
   const [showProductModal, setShowProductModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
-  const [detailView, setDetailView] = useState<any>(null); // 🔥 Drill-down state
+  const [detailView, setDetailView] = useState<any>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [refreshing, setRefreshing] = useState(false);
+
+  // 🔥 NEW: Stock movement state
+  const [movements, setMovements] = useState<any[]>([]);
+  const [stockSummary, setStockSummary] = useState<any>(null);
+  const [stockView, setStockView] = useState<"today" | "week" | "month" | "all">("today");
+  const [stockLoading, setStockLoading] = useState(false);
+  const [productWise, setProductWise] = useState<any[]>([]);
 
   useEffect(() => {
     loadAll();
+    const refresh = () => loadAll(true);
+    window.addEventListener("focus", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("storage", refresh);
+    };
   }, []);
 
-  const loadAll = async () => {
+  // 🔥 Load stock data when stock tab opens or view changes
+  useEffect(() => {
+    if (activeTab === "stock") loadStockData();
+  }, [activeTab, stockView]);
+
+  const loadAll = async (silent = false) => {
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
+      else setRefreshing(true);
+
       const [statsData, billsData, customersData, productsData, topData] =
         await Promise.all([
           getStats(),
@@ -51,10 +75,52 @@ export default function AdminPage() {
       setCustomers(customersData);
       setProducts(productsData);
       setTopProducts(topData);
+      setLastRefresh(new Date());
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  // 🔥 LOAD STOCK DATA
+  const loadStockData = async () => {
+    setStockLoading(true);
+    try {
+      if (stockView === "today") {
+        const s = await getDailySummary();
+        setStockSummary(s);
+        setMovements(s.movements);
+      } else {
+        const now = new Date();
+        let start = new Date();
+        if (stockView === "week") start.setDate(now.getDate() - 7);
+        else if (stockView === "month") start.setMonth(now.getMonth() - 1);
+        else start = new Date(0);
+
+        const data =
+          stockView === "all"
+            ? await getAllMovements()
+            : await getMovementsByRange(start.getTime(), now.getTime());
+
+        setMovements(data);
+        const totalIN = data.filter((m) => m.type === "IN").reduce((s, m) => s + m.quantity, 0);
+        const totalOUT = data.filter((m) => m.type === "OUT").reduce((s, m) => s + m.quantity, 0);
+        setStockSummary({
+          totalIN,
+          totalOUT,
+          net: totalIN - totalOUT,
+          countIN: data.filter((m) => m.type === "IN").length,
+          countOUT: data.filter((m) => m.type === "OUT").length,
+          valueIN: data.filter((m) => m.type === "IN").reduce((s, m) => s + (m.totalValue || 0), 0),
+          valueOUT: data.filter((m) => m.type === "OUT").reduce((s, m) => s + (m.totalValue || 0), 0),
+        });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setStockLoading(false);
     }
   };
 
@@ -84,9 +150,6 @@ export default function AdminPage() {
       weekday: "long", day: "numeric", month: "long", year: "numeric",
     });
 
-  // ============================================================
-  // FILTERS
-  // ============================================================
   const filteredBills = bills.filter((b) => {
     if (!searchBill) return true;
     const s = searchBill.toLowerCase();
@@ -109,30 +172,60 @@ export default function AdminPage() {
     return p.name?.toLowerCase().includes(s) || p.barcode?.includes(s);
   });
 
-  // ============================================================
-  // ACTIONS
-  // ============================================================
   const handleDeleteBill = async (id: string) => {
     if (!confirm("Delete this bill permanently?")) return;
     await deleteBill(id);
-    loadAll();
+    loadAll(true);
   };
 
   const handleDeleteProduct = async (barcode: string) => {
     if (!confirm("Delete this product permanently?")) return;
     await deleteProduct(barcode);
-    loadAll();
+    loadAll(true);
+    window.dispatchEvent(new Event("storage"));
   };
 
   const handleSaveProduct = async (product: any) => {
-    if (!product.name || !product.rate) {
+    if (!product?.name || !product?.rate) {
       alert("Product name and rate are required.");
       return;
     }
-    await addProduct(product);
-    setShowProductModal(false);
-    setEditingProduct(null);
-    loadAll();
+    const finalProduct = {
+      barcode: product.barcode || `GE-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      name: String(product.name).trim(),
+      rate: Number(product.rate) || 0,
+      stock: Number(product.stock) || 0,
+    };
+    try {
+      await addProduct(finalProduct);
+      setShowProductModal(false);
+      setEditingProduct(null);
+      await loadAll(true);
+      window.dispatchEvent(new Event("storage"));
+      alert(`✅ Product saved: ${finalProduct.name}`);
+    } catch (err: any) {
+      alert("❌ Error: " + err.message);
+    }
+  };
+
+  // 🔥 STOCK ADD (from products tab ➕ button)
+  const handleAddStock = async (barcode: string, name: string) => {
+    const qtyStr = prompt(`"${name}" ke liye kitna stock add karna hai?`);
+    if (!qtyStr) return;
+    const qty = parseInt(qtyStr);
+    if (isNaN(qty) || qty <= 0) {
+      alert("Sahi number daalo!");
+      return;
+    }
+    try {
+      await increaseStock(barcode, qty);
+      await loadAll(true);
+      if (activeTab === "stock") loadStockData();
+      window.dispatchEvent(new Event("storage"));
+      alert(`✅ ${qty} stock add ho gaya!`);
+    } catch (err: any) {
+      alert("❌ Error: " + err.message);
+    }
   };
 
   const exportBillsCSV = () => {
@@ -161,28 +254,35 @@ export default function AdminPage() {
     a.click();
   };
 
-  // 🔥 DRILL-DOWN HANDLERS
+  // 🔥 STOCK CSV EXPORT
+  const exportStockCSV = () => {
+    const csv =
+      "Time,Type,Product,Barcode,Reason,Qty,Value,Note\n" +
+      movements
+        .map(
+          (m: any) =>
+            `"${new Date(m.createdAt).toLocaleString("en-IN")}",${m.type},"${m.productName}","${m.barcode}",${m.reason},${m.quantity},${m.totalValue || 0},"${m.note || ""}"`
+        )
+        .join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `stock_movements_${Date.now()}.csv`;
+    a.click();
+  };
+
   const handleDrillDown = (type: string, data?: any) => {
     let groupedData;
-    if (type === "date") {
-      groupedData = groupByDate(bills);
-    } else if (type === "month") {
-      groupedData = groupByMonth(bills);
-    } else if (type === "year") {
-      groupedData = groupByYear(bills);
-    } else if (type === "customer") {
-      groupedData = customers;
-    } else if (type === "product") {
-      groupedData = topProducts;
-    } else if (type === "today") {
-      groupedData = groupByDate(stats?.todayBillsList || []);
-    }
+    if (type === "date") groupedData = groupByDate(bills);
+    else if (type === "month") groupedData = groupByMonth(bills);
+    else if (type === "year") groupedData = groupByYear(bills);
+    else if (type === "customer") groupedData = customers;
+    else if (type === "product") groupedData = topProducts;
+    else if (type === "today") groupedData = groupByDate(stats?.todayBillsList || []);
     setDetailView({ type, data: groupedData, subData: data || null });
   };
 
-  // ============================================================
-  // LOADING
-  // ============================================================
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -194,9 +294,6 @@ export default function AdminPage() {
     );
   }
 
-  // ============================================================
-  // DETAIL VIEW (Full Screen Drill-Down)
-  // ============================================================
   if (detailView) {
     return (
       <DetailView
@@ -214,21 +311,33 @@ export default function AdminPage() {
     );
   }
 
-  // ============================================================
-  // MAIN RENDER
-  // ============================================================
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100">
       {/* HEADER */}
       <header className="bg-white/80 backdrop-blur-lg border-b border-slate-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 lg:px-8 py-4 flex justify-between items-center">
+        <div className="max-w-7xl mx-auto px-4 lg:px-8 py-4 flex justify-between items-center gap-3 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 bg-gradient-to-br from-red-600 to-red-700 rounded-2xl flex items-center justify-center shadow-lg shadow-red-200">
               <span className="text-xl">⚙️</span>
             </div>
             <div>
               <h1 className="text-lg font-bold text-slate-900 tracking-tight">Admin Dashboard</h1>
-              <p className="text-xs text-slate-500 font-medium">Ghanshyam Enterprises • Management Console</p>
+              <p className="text-xs text-slate-500 font-medium flex items-center gap-2">
+                Ghanshyam Enterprises
+                <span className="text-slate-300">•</span>
+                <span className={refreshing ? "text-amber-500" : "text-emerald-500"}>
+                  {refreshing ? "🔄 Syncing..." : "🟢 Live"}
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  {lastRefresh.toLocaleTimeString("en-IN")}
+                </span>
+                <button
+                  onClick={() => loadAll(true)}
+                  className="text-red-600 hover:text-red-700 font-bold text-[10px] hover:underline"
+                >
+                  Refresh
+                </button>
+              </p>
             </div>
           </div>
           <Link
@@ -249,6 +358,7 @@ export default function AdminPage() {
             { id: "bills", label: "Bills", icon: "🧾", count: bills.length },
             { id: "customers", label: "Customers", icon: "👥", count: customers.length },
             { id: "products", label: "Products", icon: "📦", count: products.length },
+            { id: "stock", label: "Stock In/Out", icon: "📈" },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -272,12 +382,9 @@ export default function AdminPage() {
           ))}
         </div>
 
-        {/* ============================================================ */}
         {/* DASHBOARD TAB */}
-        {/* ============================================================ */}
         {activeTab === "dashboard" && (
           <div className="space-y-8">
-            {/* TODAY */}
             <section>
               <div className="flex items-center gap-2 mb-4">
                 <div className="w-1 h-6 bg-gradient-to-b from-red-500 to-red-700 rounded-full"></div>
@@ -324,7 +431,6 @@ export default function AdminPage() {
               </div>
             </section>
 
-            {/* QUICK ACTIONS (Drill-Down Cards) */}
             <section>
               <div className="flex items-center gap-2 mb-4">
                 <div className="w-1 h-6 bg-gradient-to-b from-purple-500 to-purple-700 rounded-full"></div>
@@ -332,66 +438,17 @@ export default function AdminPage() {
                 <span className="text-xs text-slate-400 font-medium ml-auto">Click to explore →</span>
               </div>
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                <DrillCard
-                  title="Date-wise Sales"
-                  subtitle="Daily breakdown"
-                  icon="📅"
-                  color="bg-blue-500"
-                  onClick={() => handleDrillDown("date")}
-                />
-                <DrillCard
-                  title="Monthly Sales"
-                  subtitle="Month by month"
-                  icon="📆"
-                  color="bg-indigo-500"
-                  onClick={() => handleDrillDown("month")}
-                />
-                <DrillCard
-                  title="Yearly Sales"
-                  subtitle="Year over year"
-                  icon="📈"
-                  color="bg-emerald-500"
-                  onClick={() => handleDrillDown("year")}
-                />
-                <DrillCard
-                  title="Top Customers"
-                  subtitle="Best buyers"
-                  icon="🏆"
-                  color="bg-amber-500"
-                  onClick={() => handleDrillDown("customer")}
-                />
-                <DrillCard
-                  title="Top Products"
-                  subtitle="Best sellers"
-                  icon="🔥"
-                  color="bg-red-500"
-                  onClick={() => handleDrillDown("product")}
-                />
-                <DrillCard
-                  title="This Month"
-                  subtitle="Current month"
-                  icon="🗓️"
-                  color="bg-purple-500"
-                  onClick={() => handleDrillDown("month")}
-                />
-                <DrillCard
-                  title="All Bills"
-                  subtitle="Full history"
-                  icon="🧾"
-                  color="bg-slate-600"
-                  onClick={() => setActiveTab("bills")}
-                />
-                <DrillCard
-                  title="All Customers"
-                  subtitle="Complete list"
-                  icon="👥"
-                  color="bg-pink-500"
-                  onClick={() => setActiveTab("customers")}
-                />
+                <DrillCard title="Date-wise Sales" subtitle="Daily breakdown" icon="📅" color="bg-blue-500" onClick={() => handleDrillDown("date")} />
+                <DrillCard title="Monthly Sales" subtitle="Month by month" icon="📆" color="bg-indigo-500" onClick={() => handleDrillDown("month")} />
+                <DrillCard title="Yearly Sales" subtitle="Year over year" icon="📈" color="bg-emerald-500" onClick={() => handleDrillDown("year")} />
+                <DrillCard title="Top Customers" subtitle="Best buyers" icon="🏆" color="bg-amber-500" onClick={() => handleDrillDown("customer")} />
+                <DrillCard title="Top Products" subtitle="Best sellers" icon="🔥" color="bg-red-500" onClick={() => handleDrillDown("product")} />
+                <DrillCard title="Stock In/Out" subtitle="Daily movement" icon="📈" color="bg-teal-500" onClick={() => setActiveTab("stock")} />
+                <DrillCard title="All Bills" subtitle="Full history" icon="🧾" color="bg-slate-600" onClick={() => setActiveTab("bills")} />
+                <DrillCard title="All Customers" subtitle="Complete list" icon="👥" color="bg-pink-500" onClick={() => setActiveTab("customers")} />
               </div>
             </section>
 
-            {/* ALL TIME */}
             <section>
               <div className="flex items-center gap-2 mb-4">
                 <div className="w-1 h-6 bg-gradient-to-b from-emerald-500 to-emerald-700 rounded-full"></div>
@@ -433,7 +490,6 @@ export default function AdminPage() {
               </div>
             </section>
 
-            {/* RECENT BILLS */}
             <section>
               <div className="flex items-center gap-2 mb-4">
                 <div className="w-1 h-6 bg-gradient-to-b from-red-500 to-red-700 rounded-full"></div>
@@ -490,7 +546,7 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* BILLS TAB (same as before, but with drill) */}
+        {/* BILLS TAB */}
         {activeTab === "bills" && (
           <div className="space-y-4">
             <div className="flex flex-wrap justify-between items-center gap-3">
@@ -796,6 +852,13 @@ export default function AdminPage() {
                           <td className="px-4 py-3">
                             <div className="flex gap-1.5 justify-center">
                               <button
+                                onClick={() => handleAddStock(p.barcode, p.name)}
+                                className="w-8 h-8 bg-emerald-50 hover:bg-emerald-600 hover:text-white text-emerald-600 rounded-lg text-sm transition-all"
+                                title="Stock add karo"
+                              >
+                                ➕
+                              </button>
+                              <button
                                 onClick={() => { setEditingProduct(p); setShowProductModal(true); }}
                                 className="w-8 h-8 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-600 rounded-lg text-sm transition-all"
                               >
@@ -826,6 +889,246 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        {/* ============================================================ */}
+        {/* 🔥 STOCK IN/OUT TAB (NEW) */}
+        {/* ============================================================ */}
+        {activeTab === "stock" && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap justify-between items-center gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">📈 Stock In/Out Report</h2>
+                <p className="text-xs text-slate-500">
+                  Daily basis pe kitna stock aaya (IN) aur kitna gaya (OUT)
+                </p>
+              </div>
+              <button
+                onClick={exportStockCSV}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-semibold"
+              >
+                📤 Export CSV
+              </button>
+            </div>
+
+            {/* View selector */}
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { id: "today", label: "Today", icon: "☀️" },
+                { id: "week", label: "Last 7 Days", icon: "📅" },
+                { id: "month", label: "Last 30 Days", icon: "📆" },
+                { id: "all", label: "All Time", icon: "📈" },
+              ].map((v: any) => (
+                <button
+                  key={v.id}
+                  onClick={() => setStockView(v.id)}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                    stockView === v.id
+                      ? "bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg shadow-red-200"
+                      : "bg-white text-slate-600 border border-slate-200 hover:border-red-300"
+                  }`}
+                >
+                  {v.icon} {v.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Summary cards */}
+            {stockSummary && (
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-2xl p-5 text-white shadow-lg">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-100">
+                    📥 Stock IN
+                  </p>
+                  <p className="text-3xl font-black mt-1">+{stockSummary.totalIN || 0}</p>
+                  <p className="text-[10px] text-emerald-100 mt-1">
+                    {stockSummary.countIN || 0} entries • {formatCurrency(stockSummary.valueIN || 0)}
+                  </p>
+                </div>
+                <div className="bg-gradient-to-br from-red-500 to-red-700 rounded-2xl p-5 text-white shadow-lg">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-red-100">
+                    📤 Stock OUT
+                  </p>
+                  <p className="text-3xl font-black mt-1">-{stockSummary.totalOUT || 0}</p>
+                  <p className="text-[10px] text-red-100 mt-1">
+                    {stockSummary.countOUT || 0} entries • {formatCurrency(stockSummary.valueOUT || 0)}
+                  </p>
+                </div>
+                <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-5 text-white shadow-lg">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-blue-100">
+                    Net Change
+                  </p>
+                  <p className="text-3xl font-black mt-1">
+                    {(stockSummary.net || 0) >= 0 ? "+" : ""}{stockSummary.net || 0}
+                  </p>
+                  <p className="text-[10px] text-blue-100 mt-1">units</p>
+                </div>
+                <div className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-2xl p-5 text-white shadow-lg">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-purple-100">
+                    Net Value
+                  </p>
+                  <p className="text-2xl font-black mt-1">
+                    {formatCurrency((stockSummary.valueIN || 0) - (stockSummary.valueOUT || 0))}
+                  </p>
+                  <p className="text-[10px] text-purple-100 mt-1">IN - OUT</p>
+                </div>
+              </div>
+            )}
+
+            {/* Current stock overview (kitna bacha) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                <h3 className="text-sm font-bold text-slate-800">
+                  📦 Current Stock Status (kitna bacha)
+                </h3>
+                <span className="text-xs text-slate-500">
+                  Total: {products.reduce((s: number, p: any) => s + (p.stock || 0), 0)} units
+                </span>
+              </div>
+              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                    <tr className="text-left text-slate-500 font-semibold uppercase tracking-wider">
+                      <th className="px-4 py-2">Product</th>
+                      <th className="px-4 py-2 text-right">Rate</th>
+                      <th className="px-4 py-2 text-center">Stock</th>
+                      <th className="px-4 py-2 text-right">Value</th>
+                      <th className="px-4 py-2 text-center">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {products
+                      .sort((a: any, b: any) => (a.stock || 0) - (b.stock || 0))
+                      .map((p: any) => {
+                        const isLow = (p.stock || 0) < 10;
+                        return (
+                          <tr key={p.barcode} className="hover:bg-slate-50">
+                            <td className="px-4 py-2 font-semibold text-slate-800">{p.name}</td>
+                            <td className="px-4 py-2 text-right text-slate-600">{formatCurrency(p.rate)}</td>
+                            <td className="px-4 py-2 text-center font-bold text-slate-800">
+                              {p.stock || 0}
+                            </td>
+                            <td className="px-4 py-2 text-right font-bold text-slate-700">
+                              {formatCurrency((p.stock || 0) * (p.rate || 0))}
+                            </td>
+                            <td className="px-4 py-2 text-center">
+                              {p.stock === 0 ? (
+                                <span className="bg-red-100 text-red-700 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase">
+                                  Out
+                                </span>
+                              ) : isLow ? (
+                                <span className="bg-amber-100 text-amber-700 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase">
+                                  Low
+                                </span>
+                              ) : (
+                                <span className="bg-emerald-100 text-emerald-700 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase">
+                                  OK
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+                {products.length === 0 && (
+                  <div className="text-center py-8">
+                    <p className="text-sm text-slate-400">No products yet</p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Movements log */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center">
+                <h3 className="text-sm font-bold text-slate-800">
+                  📋 Stock Movements ({movements.length})
+                </h3>
+                {stockLoading && <span className="text-xs text-slate-400">Loading...</span>}
+              </div>
+              <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                <table className="w-full">
+                  <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                    <tr className="text-left text-xs text-slate-500 font-semibold uppercase tracking-wider">
+                      <th className="px-4 py-3">Time</th>
+                      <th className="px-4 py-3">Type</th>
+                      <th className="px-4 py-3">Product</th>
+                      <th className="px-4 py-3">Reason</th>
+                      <th className="px-4 py-3 text-center">Qty</th>
+                      <th className="px-4 py-3 text-right">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {movements.map((m: any) => (
+                      <tr key={m.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-3 text-xs text-slate-600">
+                          {new Date(m.createdAt).toLocaleString("en-IN", {
+                            day: "2-digit",
+                            month: "short",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-block px-2 py-1 rounded-lg text-[10px] font-bold uppercase ${
+                              m.type === "IN"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {m.type === "IN" ? "📥 IN" : "📤 OUT"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm font-semibold text-slate-800">
+                          {m.productName}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-500 capitalize">
+                          {m.reason?.replace("_", " ")}
+                        </td>
+                        <td className="px-4 py-3 text-center font-bold text-slate-800">
+                          <span className={m.type === "IN" ? "text-emerald-600" : "text-red-600"}>
+                            {m.type === "IN" ? "+" : "-"}
+                            {m.quantity}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-bold text-slate-700">
+                          {formatCurrency(m.totalValue || 0)}
+                        </td>
+                      </tr>
+                    ))}
+                    {movements.length === 0 && !stockLoading && (
+                      <tr>
+                        <td colSpan={6} className="text-center py-16 text-slate-400">
+                          <p className="text-4xl mb-2">📭</p>
+                          <p className="text-sm font-medium">No stock movements yet</p>
+                          <p className="text-xs mt-1">
+                            Product add karo ya bill save karo — record yahan aayega
+                          </p>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Info box */}
+            <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+              <p className="text-xs text-blue-800 font-semibold mb-1">💡 Kaise kaam karta hai:</p>
+              <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
+                <li>
+                  <b>IN</b> — jab naya product add karo (initial stock), ya "➕" button se stock badhao
+                </li>
+                <li>
+                  <b>OUT</b> — jab billing page se bill save karo (sale), stock automatically kam hota hai
+                </li>
+                <li>Har movement yahan date + time ke saath record hoti hai</li>
+                <li>Daily basis pe dekhne ke liye "Today" select karo</li>
+              </ul>
+            </div>
+          </div>
+        )}
       </main>
 
       {/* BILL DETAIL MODAL */}
@@ -851,7 +1154,7 @@ export default function AdminPage() {
 }
 
 // ============================================================
-// STAT CARD (Clickable)
+// STAT CARD
 // ============================================================
 function StatCard({ title, value, subtitle, gradient, icon, onClick }: any) {
   return (
@@ -870,7 +1173,7 @@ function StatCard({ title, value, subtitle, gradient, icon, onClick }: any) {
 }
 
 // ============================================================
-// DRILL CARD (Clickable)
+// DRILL CARD
 // ============================================================
 function DrillCard({ title, subtitle, icon, color, onClick }: any) {
   return (
@@ -893,7 +1196,7 @@ function DrillCard({ title, subtitle, icon, color, onClick }: any) {
 }
 
 // ============================================================
-// DETAIL VIEW (Full Screen)
+// DETAIL VIEW
 // ============================================================
 function DetailView({
   detailView, setDetailView, formatCurrency, formatDate, formatShortDate, formatDay,
@@ -935,7 +1238,6 @@ function DetailView({
       </header>
 
       <main className="max-w-7xl mx-auto px-4 lg:px-8 py-6 lg:py-8">
-        {/* Summary */}
         {Array.isArray(data) && data.length > 0 && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
@@ -971,7 +1273,6 @@ function DetailView({
           </div>
         )}
 
-        {/* Data List */}
         <div className="space-y-3">
           {type === "date" && data.map((d: any, idx: number) => (
             <DateRow key={idx} data={d} formatCurrency={formatCurrency} formatDay={formatDay} setSelectedBill={setSelectedBill} />
@@ -1013,7 +1314,6 @@ function DetailView({
         </div>
       </main>
 
-      {/* Bill Modal */}
       {selectedBill && (
         <BillDetailModal
           bill={selectedBill}
@@ -1023,7 +1323,6 @@ function DetailView({
         />
       )}
 
-      {/* Customer Detail Modal */}
       {selectedCustomer && (
         <CustomerDetailModal
           customer={selectedCustomer}
@@ -1411,6 +1710,16 @@ function CustomerDetailModal({ customer, onClose, formatCurrency, formatDate }: 
 // PRODUCT MODAL
 // ============================================================
 function ProductModal({ product, onClose, onSave }: any) {
+  const [form, setForm] = useState({
+    barcode: product?.barcode || "",
+    name: product?.name || "",
+    rate: product?.rate || "",
+    stock: product?.stock || "",
+  });
+
+  const update = (key: string, val: any) =>
+    setForm((f) => ({ ...f, [key]: val }));
+
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl">
@@ -1420,20 +1729,21 @@ function ProductModal({ product, onClose, onSave }: any) {
               {product ? "Edit Product" : "Add New Product"}
             </h2>
             <p className="text-xs text-slate-500">
-              {product ? "Update product information" : "Fill in the product details"}
+              {product ? "Update product info" : "Fill in the details"}
             </p>
           </div>
           <button onClick={onClose} className="w-9 h-9 bg-slate-100 hover:bg-slate-200 rounded-xl flex items-center justify-center">✕</button>
         </div>
+
         <div className="space-y-3">
           <div>
             <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Barcode</label>
             <input
               type="text"
-              placeholder="Enter barcode"
-              className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 focus:bg-white rounded-xl outline-none text-sm transition-all"
-              value={product?.barcode || ""}
-              onChange={(e) => onSave({ ...product, barcode: e.target.value }, true)}
+              placeholder="Auto-generate if empty"
+              className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+              value={form.barcode}
+              onChange={(e) => update("barcode", e.target.value)}
               disabled={!!product?.barcode}
             />
           </div>
@@ -1442,9 +1752,10 @@ function ProductModal({ product, onClose, onSave }: any) {
             <input
               type="text"
               placeholder="e.g. Amul Butter 500g"
-              className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 focus:bg-white rounded-xl outline-none text-sm transition-all"
-              value={product?.name || ""}
-              onChange={(e) => onSave({ ...product, name: e.target.value }, true)}
+              className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+              value={form.name}
+              onChange={(e) => update("name", e.target.value)}
+              autoFocus
             />
           </div>
           <div className="grid grid-cols-2 gap-3">
@@ -1453,30 +1764,31 @@ function ProductModal({ product, onClose, onSave }: any) {
               <input
                 type="number"
                 placeholder="0"
-                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 focus:bg-white rounded-xl outline-none text-sm transition-all"
-                value={product?.rate || ""}
-                onChange={(e) => onSave({ ...product, rate: e.target.value }, true)}
+                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+                value={form.rate}
+                onChange={(e) => update("rate", e.target.value)}
               />
             </div>
             <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Stock Quantity</label>
+              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Stock</label>
               <input
                 type="number"
                 placeholder="0"
-                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 focus:bg-white rounded-xl outline-none text-sm transition-all"
-                value={product?.stock || ""}
-                onChange={(e) => onSave({ ...product, stock: e.target.value }, true)}
+                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+                value={form.stock}
+                onChange={(e) => update("stock", e.target.value)}
               />
             </div>
           </div>
         </div>
+
         <div className="flex gap-2 mt-6">
-          <button onClick={onClose} className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold text-sm transition-all">
+          <button onClick={onClose} className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold text-sm">
             Cancel
           </button>
           <button
-            onClick={() => onSave(product, false)}
-            className="flex-1 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-xl font-semibold text-sm transition-all shadow-lg shadow-red-200"
+            onClick={() => onSave(form)}
+            className="flex-1 py-3 bg-gradient-to-r from-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white rounded-xl font-semibold text-sm shadow-lg shadow-red-200"
           >
             {product ? "Update" : "Save"} Product
           </button>

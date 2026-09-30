@@ -9,6 +9,8 @@ import {
   findProductByBarcode,
   bulkAddProducts,
   seedDefaultProducts,
+  decreaseStock,
+  increaseStock,
 } from '@/lib/productDatabase';
 import { saveBill as saveBillToFirebase } from '@/lib/billDatabase';
 
@@ -16,7 +18,7 @@ export default function BillingPage() {
   const [billData, setBillData] = useState({
     shopName: 'Ghanshyam Enterprises',
     shopSubtitle: 'Fresh & Daily Needs',
-    shopAddress: '123, Main Market, Near Temple, Vrindavan, UP 281121',
+    shopAddress: 'Ghanshyam Enterprises Sitalpur Parsa Road',
     shopPhone: '+91 7319893327',
     shopEmail: 'enterpriseghanshyam8@gmail.com',
     customerName: '',
@@ -58,32 +60,44 @@ export default function BillingPage() {
   const html5QrcodeRef = useRef<any>(null);
 
   // ============================================================
+  // 🔥 NOTIFY OTHER TABS (admin panel auto-refresh)
+  // ============================================================
+  const notifyOtherTabs = () => {
+    try {
+      window.dispatchEvent(new Event('storage'));
+    } catch (e) {}
+  };
+
+  // ============================================================
   // LOAD FROM FIREBASE
   // ============================================================
   useEffect(() => {
     loadProducts();
     generateNewInvoice();
+
+    const onFocus = () => loadProducts(true);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('storage', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('storage', onFocus);
+    };
   }, []);
 
-  const loadProducts = async () => {
+  const loadProducts = async (silent = false) => {
     try {
-      setLoading(true);
-      setDbStatus('connecting');
+      if (!silent) {
+        setLoading(true);
+        setDbStatus('connecting');
+      }
       const data = await getProducts();
       setProducts(data);
       setDbStatus('connected');
-
-      if (data.length === 0) {
-        console.log('Empty database — seeding defaults...');
-        await seedDefaultProducts();
-        const seeded = await getProducts();
-        setProducts(seeded);
-      }
     } catch (err: any) {
       console.error('Firebase load error:', err);
       setDbStatus('error');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
@@ -93,7 +107,7 @@ export default function BillingPage() {
     const random = Math.floor(1000 + Math.random() * 9000);
     setBillData(prev => ({
       ...prev,
-      invoiceNo: 'KS-' + timestamp + '-' + random,
+      invoiceNo: 'GE-' + timestamp + '-' + random,
       invoiceDate: date.toLocaleDateString('en-IN', {
         day: '2-digit', month: 'short', year: 'numeric'
       }) + ', ' + date.toLocaleTimeString('en-IN', {
@@ -165,7 +179,10 @@ export default function BillingPage() {
     addProductToBill(product);
   };
 
+  // ✅ addProductToBill — barcode proper set karo
   const addProductToBill = (product: any) => {
+    console.log('🎯 addProductToBill:', { name: product.name, barcode: product.barcode, rate: product.rate });
+
     const existingIndex = billData.items.findIndex(
       (item: any) => item.barcode === product.barcode && product.barcode
     );
@@ -200,7 +217,7 @@ export default function BillingPage() {
   };
 
   // ============================================================
-  // 🖐️ MANUAL PRODUCT ADD (scanner ke bina)
+  // 🖐️ MANUAL PRODUCT ADD
   // ============================================================
   const addManualProduct = () => {
     if (!manualProduct.name || !manualProduct.rate) {
@@ -208,6 +225,7 @@ export default function BillingPage() {
       return;
     }
 
+    // 🔥 Manual product ko database me save karo taaki stock OUT ho sake
     const product = {
       productName: manualProduct.name.trim(),
       quantity: parseInt(String(manualProduct.quantity)) || 1,
@@ -241,8 +259,10 @@ export default function BillingPage() {
       return;
     }
 
+    const barcode = newProduct.barcode?.trim() || `GE-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+
     const product = {
-      barcode: newProduct.barcode,
+      barcode,
       name: newProduct.name.trim(),
       rate: parseFloat(newProduct.rate) || 0,
       stock: parseInt(newProduct.stock) || 0,
@@ -257,6 +277,7 @@ export default function BillingPage() {
       setShowNewProductModal(false);
       setNewProduct({ barcode: '', name: '', rate: '', stock: '' });
       setScanStatus(`✅ Save ho gaya: ${product.name}`);
+      notifyOtherTabs();
       setTimeout(() => setScanStatus(''), 3000);
     } catch (err: any) {
       alert('❌ Firebase error: ' + err.message);
@@ -273,6 +294,7 @@ export default function BillingPage() {
       await deleteProduct(barcode);
       const updated = await getProducts();
       setProducts(updated);
+      notifyOtherTabs();
     } catch (err: any) {
       alert('❌ Error: ' + err.message);
     }
@@ -321,6 +343,7 @@ export default function BillingPage() {
         const count = await bulkAddProducts(imported);
         const updated = await getProducts();
         setProducts(updated);
+        notifyOtherTabs();
         alert(`✅ ${count} products Firebase me import ho gaye!`);
       } catch (err: any) {
         alert('❌ Import error: ' + err.message);
@@ -335,7 +358,30 @@ export default function BillingPage() {
       const count = await seedDefaultProducts();
       const updated = await getProducts();
       setProducts(updated);
+      notifyOtherTabs();
       alert(`✅ ${count} default products add ho gaye!`);
+    } catch (err: any) {
+      alert('❌ Error: ' + err.message);
+    }
+  };
+
+  // ============================================================
+  // ➕ ADD STOCK
+  // ============================================================
+  const handleAddStock = async (barcode: string) => {
+    const qty = prompt('Kitna stock add karna hai?');
+    if (!qty) return;
+    const num = parseInt(qty);
+    if (isNaN(num) || num <= 0) {
+      alert('Sahi number daalo!');
+      return;
+    }
+    try {
+      await increaseStock(barcode, num);
+      const updated = await getProducts();
+      setProducts(updated);
+      notifyOtherTabs();
+      alert(`✅ ${num} stock add ho gaya!`);
     } catch (err: any) {
       alert('❌ Error: ' + err.message);
     }
@@ -408,6 +454,21 @@ export default function BillingPage() {
   const handleItemChange = (index: number, field: string, value: any) => {
     const newItems = [...billData.items];
     (newItems[index] as any)[field] = value;
+
+    // 🔥 Agar productName change ho to barcode bhi reset karo
+    // taaki galat barcode na rahe
+    if (field === 'productName') {
+      const matchedProduct = products.find(
+        (p: any) => p.name.toLowerCase().trim() === String(value).toLowerCase().trim()
+      );
+      if (matchedProduct) {
+        newItems[index].barcode = matchedProduct.barcode;
+        newItems[index].rate = matchedProduct.rate;
+      } else {
+        newItems[index].barcode = '';
+      }
+    }
+
     setBillData(calculateTotals({ ...billData, items: newItems }));
   };
 
@@ -494,7 +555,7 @@ export default function BillingPage() {
   };
 
   // ============================================================
-  // 💾 SAVE BILL TO FIREBASE
+  // 💾 SAVE BILL + STOCK DECREASE  ✅ FINAL FIX
   // ============================================================
   const saveBill = async () => {
     const validItems = billData.items.filter((i: any) => i.productName);
@@ -508,15 +569,61 @@ export default function BillingPage() {
     try {
       setSaving(true);
       setScanStatus('💾 Bill save ho raha hai...');
+
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('📋 Bill Items:', validItems);
+      console.log('🔖 Barcodes:', validItems.map((i: any) => i.barcode));
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
       await saveBillToFirebase(billData);
-      setScanStatus('✅ Bill saved to Firebase!');
-      alert('✅ Bill Firebase me save ho gaya!\n\nAdmin Panel me jaake dekho.');
+      console.log('✅ Bill saved to Firebase');
+
+      // 🔥 FINAL FIX: Barcode missing ho to product name se dhundho
+      const stockUpdates = validItems.map(async (item: any) => {
+        let barcode = item.barcode;
+
+        // Agar barcode missing/empty hai to product name se match karo
+        if (!barcode || barcode.trim() === '') {
+          console.log(`🔍 Barcode missing for "${item.productName}" — searching by name...`);
+          
+          const matchedProduct = products.find(
+            (p: any) =>
+              p.name.toLowerCase().trim() === item.productName.toLowerCase().trim()
+          );
+
+          if (matchedProduct && matchedProduct.barcode) {
+            barcode = matchedProduct.barcode;
+            console.log(`✅ Matched: "${item.productName}" → ${barcode}`);
+          } else {
+            console.warn(`⚠️ No product found for: "${item.productName}" — skipping`);
+            return null;
+          }
+        }
+
+        console.log(`📤 Stock OUT: ${barcode} — Qty: ${item.quantity}`);
+        
+        try {
+          await decreaseStock(barcode, parseInt(item.quantity) || 1);
+          console.log(`✅ Stock decreased: ${barcode}`);
+        } catch (stockErr: any) {
+          console.error(`❌ decreaseStock failed for ${barcode}:`, stockErr);
+        }
+      });
+
+      await Promise.all(stockUpdates);
+
+      const updated = await getProducts();
+      setProducts(updated);
+      notifyOtherTabs();
+
+      setScanStatus('✅ Bill saved + Stock updated!');
+      alert('✅ Bill Firebase me save ho gaya!\n📦 Stock bhi update ho gaya.');
       setTimeout(() => {
         setScanStatus('');
         resetBill();
       }, 1500);
     } catch (err: any) {
-      console.error('Save error:', err);
+      console.error('❌ Save error:', err);
       alert('❌ Error: ' + err.message);
       setScanStatus('❌ Save nahi hua');
     } finally {
@@ -625,11 +732,10 @@ export default function BillingPage() {
             </button>
           </div>
 
-          {/* Manual Add Form */}
           {showManualAdd && (
             <div className="bg-slate-950 rounded-xl p-4 border border-blue-900/50 mb-3">
               <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-3">
-                🖐️ Add Product Manually
+                 Add Product Manually
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
                 <input
@@ -1028,6 +1134,13 @@ export default function BillingPage() {
                     <div className="text-[10px] text-slate-500">📷 {p.barcode} | Stock: {p.stock || 0}</div>
                   </div>
                   <div className="text-red-400 font-bold text-sm mr-3">{formatCurrency(p.rate)}</div>
+                  <button
+                    onClick={() => handleAddStock(p.barcode)}
+                    className="w-7 h-7 bg-green-900/50 hover:bg-green-600 hover:text-white text-green-400 rounded-lg text-xs border border-green-800 mr-1"
+                    title="Stock add karo"
+                  >
+                    ➕
+                  </button>
                   <button onClick={() => handleDeleteProduct(p.barcode)} className="w-7 h-7 bg-red-900/50 hover:bg-red-600 hover:text-white text-red-400 rounded-lg text-xs border border-red-800">🗑️</button>
                 </div>
               ))}
