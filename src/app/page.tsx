@@ -26,7 +26,7 @@ export default function BillingPage() {
     customerAddress: '',
     invoiceNo: '',
     invoiceDate: '',
-    items: [{ productName: '', quantity: 1, rate: 0, amount: 0, barcode: '' }],
+    items: [{ productName: '', quantity: 1, rate: 0, amount: 0, barcode: '', purchaseRate: 0 }],
     subtotal: 0,
     gstRate: 18,
     gstAmount: 0,
@@ -52,7 +52,7 @@ export default function BillingPage() {
   const [manualBarcode, setManualBarcode] = useState('');
   const [showNewProductModal, setShowNewProductModal] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
-  const [newProduct, setNewProduct] = useState({ barcode: '', name: '', rate: '', stock: '' });
+  const [newProduct, setNewProduct] = useState({ barcode: '', name: '', purchaseRate: '', rate: '', stock: '' });
   const [saving, setSaving] = useState(false);
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualProduct, setManualProduct] = useState({ name: '', rate: '', quantity: 1 });
@@ -60,7 +60,7 @@ export default function BillingPage() {
   const html5QrcodeRef = useRef<any>(null);
 
   // ============================================================
-  // 🔥 NOTIFY OTHER TABS (admin panel auto-refresh)
+  // 🔥 NOTIFY OTHER TABS
   // ============================================================
   const notifyOtherTabs = () => {
     try {
@@ -170,7 +170,7 @@ export default function BillingPage() {
     const product = await findProductByBarcode(code);
 
     if (!product) {
-      setNewProduct({ barcode: code, name: '', rate: '', stock: '' });
+      setNewProduct({ barcode: code, name: '', purchaseRate: '', rate: '', stock: '' });
       setShowNewProductModal(true);
       setScanStatus(`⚠️ Naya product! Details bharo.`);
       return;
@@ -179,9 +179,14 @@ export default function BillingPage() {
     addProductToBill(product);
   };
 
-  // ✅ addProductToBill — barcode proper set karo
+  // ✅ addProductToBill — purchaseRate bhi store karo
   const addProductToBill = (product: any) => {
-    console.log('🎯 addProductToBill:', { name: product.name, barcode: product.barcode, rate: product.rate });
+    console.log('🎯 addProductToBill:', {
+      name: product.name,
+      barcode: product.barcode,
+      rate: product.rate,
+      purchaseRate: product.purchaseRate,
+    });
 
     const existingIndex = billData.items.findIndex(
       (item: any) => item.barcode === product.barcode && product.barcode
@@ -202,6 +207,7 @@ export default function BillingPage() {
         rate: product.rate,
         amount: product.rate,
         barcode: product.barcode || '',
+        purchaseRate: product.purchaseRate || 0,  // 🔥 NAYA
       };
       if (newItems[lastIndex].productName === '' && newItems[lastIndex].rate === 0) {
         newItems[lastIndex] = newItem;
@@ -225,13 +231,13 @@ export default function BillingPage() {
       return;
     }
 
-    // 🔥 Manual product ko database me save karo taaki stock OUT ho sake
     const product = {
       productName: manualProduct.name.trim(),
       quantity: parseInt(String(manualProduct.quantity)) || 1,
       rate: parseFloat(manualProduct.rate) || 0,
       amount: (parseInt(String(manualProduct.quantity)) || 1) * (parseFloat(manualProduct.rate) || 0),
       barcode: '',
+      purchaseRate: 0,
     };
 
     const newItems = [...billData.items];
@@ -251,11 +257,11 @@ export default function BillingPage() {
   };
 
   // ============================================================
-  // 🆕 SAVE NEW PRODUCT
+  // 🆕 SAVE NEW PRODUCT (with purchase rate)
   // ============================================================
   const saveNewProduct = async () => {
     if (!newProduct.name || !newProduct.rate) {
-      alert('Product name aur rate dono bharo!');
+      alert('Product name aur selling rate dono bharo!');
       return;
     }
 
@@ -264,6 +270,7 @@ export default function BillingPage() {
     const product = {
       barcode,
       name: newProduct.name.trim(),
+      purchaseRate: parseFloat(newProduct.purchaseRate) || 0,  // 🔥 NAYA
       rate: parseFloat(newProduct.rate) || 0,
       stock: parseInt(newProduct.stock) || 0,
     };
@@ -275,7 +282,7 @@ export default function BillingPage() {
       setProducts(updated);
       addProductToBill(product);
       setShowNewProductModal(false);
-      setNewProduct({ barcode: '', name: '', rate: '', stock: '' });
+      setNewProduct({ barcode: '', name: '', purchaseRate: '', rate: '', stock: '' });
       setScanStatus(`✅ Save ho gaya: ${product.name}`);
       notifyOtherTabs();
       setTimeout(() => setScanStatus(''), 3000);
@@ -301,11 +308,11 @@ export default function BillingPage() {
   };
 
   // ============================================================
-  // 📤 EXPORT CSV
+  // 📤 EXPORT CSV (with purchase rate)
   // ============================================================
   const exportProducts = () => {
-    const csv = 'Barcode,Name,Rate,Stock\n' +
-      products.map((p: any) => `${p.barcode},"${p.name}",${p.rate},${p.stock || 0}`).join('\n');
+    const csv = 'Barcode,Name,PurchaseRate,SellingRate,Stock\n' +
+      products.map((p: any) => `${p.barcode},"${p.name}",${p.purchaseRate || 0},${p.rate},${p.stock || 0}`).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -334,8 +341,9 @@ export default function BillingPage() {
             return {
               barcode: parts[0],
               name: parts[1],
-              rate: parseFloat(parts[2]) || 0,
-              stock: parseInt(parts[3]) || 0,
+              purchaseRate: parseFloat(parts[2]) || 0,
+              rate: parseFloat(parts[3]) || 0,
+              stock: parseInt(parts[4]) || 0,
             };
           })
           .filter((p: any) => p.barcode && p.name);
@@ -455,8 +463,7 @@ export default function BillingPage() {
     const newItems = [...billData.items];
     (newItems[index] as any)[field] = value;
 
-    // 🔥 Agar productName change ho to barcode bhi reset karo
-    // taaki galat barcode na rahe
+    // 🔥 productName change hone pe barcode + purchaseRate auto update
     if (field === 'productName') {
       const matchedProduct = products.find(
         (p: any) => p.name.toLowerCase().trim() === String(value).toLowerCase().trim()
@@ -464,8 +471,10 @@ export default function BillingPage() {
       if (matchedProduct) {
         newItems[index].barcode = matchedProduct.barcode;
         newItems[index].rate = matchedProduct.rate;
+        newItems[index].purchaseRate = matchedProduct.purchaseRate || 0;
       } else {
         newItems[index].barcode = '';
+        newItems[index].purchaseRate = 0;
       }
     }
 
@@ -493,7 +502,7 @@ export default function BillingPage() {
   const addNewItem = () => {
     setBillData({
       ...billData,
-      items: [...billData.items, { productName: '', quantity: 1, rate: 0, amount: 0, barcode: '' }]
+      items: [...billData.items, { productName: '', quantity: 1, rate: 0, amount: 0, barcode: '', purchaseRate: 0 }]
     });
   };
 
@@ -555,7 +564,7 @@ export default function BillingPage() {
   };
 
   // ============================================================
-  // 💾 SAVE BILL + STOCK DECREASE  ✅ FINAL FIX
+  // 💾 SAVE BILL + STOCK DECREASE + PROFIT  ✅ FINAL
   // ============================================================
   const saveBill = async () => {
     const validItems = billData.items.filter((i: any) => i.productName);
@@ -573,16 +582,18 @@ export default function BillingPage() {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       console.log('📋 Bill Items:', validItems);
       console.log('🔖 Barcodes:', validItems.map((i: any) => i.barcode));
+      console.log('💰 Purchase Rates:', validItems.map((i: any) => i.purchaseRate));
+      console.log('🏷️ Selling Rates:', validItems.map((i: any) => i.rate));
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 
       await saveBillToFirebase(billData);
       console.log('✅ Bill saved to Firebase');
 
-      // 🔥 FINAL FIX: Barcode missing ho to product name se dhundho
+      // 🔥 Stock OUT + Profit calculation
       const stockUpdates = validItems.map(async (item: any) => {
         let barcode = item.barcode;
 
-        // Agar barcode missing/empty hai to product name se match karo
+        // Agar barcode missing hai to product name se match karo
         if (!barcode || barcode.trim() === '') {
           console.log(`🔍 Barcode missing for "${item.productName}" — searching by name...`);
           
@@ -600,11 +611,19 @@ export default function BillingPage() {
           }
         }
 
-        console.log(`📤 Stock OUT: ${barcode} — Qty: ${item.quantity}`);
+        const sellingRate = parseFloat(item.rate) || 0;
+        console.log(`📤 Stock OUT: ${barcode} — Qty: ${item.quantity} @ Selling ₹${sellingRate}`);
         
         try {
-          await decreaseStock(barcode, parseInt(item.quantity) || 1);
-          console.log(`✅ Stock decreased: ${barcode}`);
+          // 🔥 sellingRate pass karo profit calculation ke liye
+          await decreaseStock(
+            barcode,
+            parseInt(item.quantity) || 1,
+            undefined,
+            "sale",
+            sellingRate
+          );
+          console.log(`✅ Stock decreased + Profit logged: ${barcode}`);
         } catch (stockErr: any) {
           console.error(`❌ decreaseStock failed for ${barcode}:`, stockErr);
         }
@@ -617,7 +636,7 @@ export default function BillingPage() {
       notifyOtherTabs();
 
       setScanStatus('✅ Bill saved + Stock updated!');
-      alert('✅ Bill Firebase me save ho gaya!\n📦 Stock bhi update ho gaya.');
+      alert('✅ Bill Firebase me save ho gaya!\n📦 Stock OUT ho gaya\n💰 Profit calculate ho gaya!');
       setTimeout(() => {
         setScanStatus('');
         resetBill();
@@ -636,7 +655,7 @@ export default function BillingPage() {
     setBillData(prev => ({
       ...prev,
       customerName: '', customerPhone: '', customerAddress: '',
-      items: [{ productName: '', quantity: 1, rate: 0, amount: 0, barcode: '' }],
+      items: [{ productName: '', quantity: 1, rate: 0, amount: 0, barcode: '', purchaseRate: 0 }],
       subtotal: 0, gstAmount: 0, discount: 0, total: 0,
       paymentMethod: 'Cash', deliveryCharge: 0, platformFee: 0,
       handlingCharge: 0, convenienceFee: 0,
@@ -876,10 +895,17 @@ export default function BillingPage() {
                 {suggestions.map((product: any, idx: number) => (
                   <div
                     key={idx}
-                    className="p-2.5 hover:bg-slate-800 cursor-pointer flex justify-between border-b border-slate-800 last:border-0"
+                    className="p-2.5 hover:bg-slate-800 cursor-pointer flex justify-between items-center border-b border-slate-800 last:border-0"
                     onClick={() => selectProduct(product)}
                   >
-                    <span className="text-sm text-white">{product.name}</span>
+                    <div>
+                      <span className="text-sm text-white">{product.name}</span>
+                      {product.purchaseRate > 0 && (
+                        <span className="text-[10px] text-amber-400 ml-2">
+                          (Cost: ₹{product.purchaseRate})
+                        </span>
+                      )}
+                    </div>
                     <span className="text-red-400 font-bold text-sm">{formatCurrency(product.rate)}</span>
                   </div>
                 ))}
@@ -905,6 +931,11 @@ export default function BillingPage() {
                     />
                     {item.barcode && (
                       <span className="text-[9px] text-slate-500">📷 {item.barcode}</span>
+                    )}
+                    {item.purchaseRate > 0 && (
+                      <span className="text-[9px] text-amber-400 ml-2">
+                        Cost: ₹{item.purchaseRate}
+                      </span>
                     )}
                   </div>
                   <input
@@ -1032,7 +1063,7 @@ export default function BillingPage() {
         </div>
       )}
 
-      {/* NEW PRODUCT MODAL */}
+      {/* NEW PRODUCT MODAL (with purchase rate) */}
       {showNewProductModal && (
         <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
           <div className="bg-slate-900 rounded-2xl p-6 max-w-md w-full shadow-2xl border border-slate-800">
@@ -1048,7 +1079,7 @@ export default function BillingPage() {
                 <label className="text-xs font-bold text-slate-400 mb-1 block">Product Name *</label>
                 <input
                   type="text"
-                  placeholder="e.g. Amul Butter 500g"
+                  placeholder="e.g. Tv"
                   className="w-full px-3 py-2 bg-slate-950 border-2 border-slate-800 focus:border-red-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
                   value={newProduct.name}
                   onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
@@ -1057,30 +1088,47 @@ export default function BillingPage() {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="text-xs font-bold text-slate-400 mb-1 block">Rate (₹) *</label>
+                  <label className="text-xs font-bold text-amber-400 mb-1 block">💰 Purchase Rate (₹)</label>
                   <input
                     type="number"
-                    placeholder="0"
-                    className="w-full px-3 py-2 bg-slate-950 border-2 border-slate-800 focus:border-red-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
+                    placeholder="485"
+                    className="w-full px-3 py-2 bg-slate-950 border-2 border-amber-800 focus:border-amber-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
+                    value={newProduct.purchaseRate}
+                    onChange={(e) => setNewProduct({ ...newProduct, purchaseRate: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-emerald-400 mb-1 block">🏷️ Selling Rate (₹) *</label>
+                  <input
+                    type="number"
+                    placeholder="500"
+                    className="w-full px-3 py-2 bg-slate-950 border-2 border-emerald-800 focus:border-emerald-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
                     value={newProduct.rate}
                     onChange={(e) => setNewProduct({ ...newProduct, rate: e.target.value })}
                   />
                 </div>
-                <div>
-                  <label className="text-xs font-bold text-slate-400 mb-1 block">Stock</label>
-                  <input
-                    type="number"
-                    placeholder="0"
-                    className="w-full px-3 py-2 bg-slate-950 border-2 border-slate-800 focus:border-red-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
-                    value={newProduct.stock}
-                    onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })}
-                  />
+              </div>
+              {newProduct.purchaseRate && newProduct.rate && Number(newProduct.rate) > Number(newProduct.purchaseRate) && (
+                <div className="bg-emerald-950/50 border border-emerald-800 rounded-xl p-2.5">
+                  <p className="text-xs text-emerald-400">
+                    💵 <b>Profit per unit:</b> ₹{(Number(newProduct.rate) - Number(newProduct.purchaseRate)).toFixed(2)}
+                  </p>
                 </div>
+              )}
+              <div>
+                <label className="text-xs font-bold text-slate-400 mb-1 block">Stock</label>
+                <input
+                  type="number"
+                  placeholder="0"
+                  className="w-full px-3 py-2 bg-slate-950 border-2 border-slate-800 focus:border-red-500 rounded-xl outline-none text-sm text-white placeholder-slate-500"
+                  value={newProduct.stock}
+                  onChange={(e) => setNewProduct({ ...newProduct, stock: e.target.value })}
+                />
               </div>
             </div>
             <div className="flex gap-2 mt-5">
               <button
-                onClick={() => { setShowNewProductModal(false); setNewProduct({ barcode: '', name: '', rate: '', stock: '' }); }}
+                onClick={() => { setShowNewProductModal(false); setNewProduct({ barcode: '', name: '', purchaseRate: '', rate: '', stock: '' }); }}
                 className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-bold text-sm border border-slate-700"
               >
                 Cancel
@@ -1132,6 +1180,11 @@ export default function BillingPage() {
                   <div className="flex-1">
                     <div className="font-bold text-sm text-white">{p.name}</div>
                     <div className="text-[10px] text-slate-500">📷 {p.barcode} | Stock: {p.stock || 0}</div>
+                    {p.purchaseRate > 0 && (
+                      <div className="text-[10px] text-amber-400">
+                        Cost: ₹{p.purchaseRate} → Sell: ₹{p.rate} | Profit: ₹{(p.rate - p.purchaseRate).toFixed(2)}
+                      </div>
+                    )}
                   </div>
                   <div className="text-red-400 font-bold text-sm mr-3">{formatCurrency(p.rate)}</div>
                   <button

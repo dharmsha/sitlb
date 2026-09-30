@@ -15,8 +15,10 @@ export type StockMovement = {
   productName: string;
   type: "IN" | "OUT";
   quantity: number;
-  reason: "purchase" | "sale" | "manual_add" | "manual_reduce" | "return" | "damage";
+  reason: string;
   rate?: number;
+  purchaseRate?: number;   // 🔥 NAYA
+  profit?: number;         // 🔥 NAYA
   totalValue?: number;
   note?: string;
   createdAt: number;
@@ -41,10 +43,7 @@ export async function getAllMovements(): Promise<StockMovement[]> {
   return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
 }
 
-export async function getMovementsByRange(
-  startMs: number,
-  endMs: number
-): Promise<StockMovement[]> {
+export async function getMovementsByRange(startMs: number, endMs: number): Promise<StockMovement[]> {
   const q = query(
     collection(db, "stockMovements"),
     where("createdAt", ">=", startMs),
@@ -69,6 +68,7 @@ export async function getDailySummary(date = new Date()) {
   const totalOUT = movements.filter((m) => m.type === "OUT").reduce((s, m) => s + m.quantity, 0);
   const valueIN = movements.filter((m) => m.type === "IN").reduce((s, m) => s + (m.totalValue || 0), 0);
   const valueOUT = movements.filter((m) => m.type === "OUT").reduce((s, m) => s + (m.totalValue || 0), 0);
+  const totalProfit = movements.filter((m) => m.type === "OUT").reduce((s, m) => s + (m.profit || 0), 0);
 
   return {
     date,
@@ -78,8 +78,57 @@ export async function getDailySummary(date = new Date()) {
     net: totalIN - totalOUT,
     valueIN,
     valueOUT,
+    totalProfit,   // 🔥 NAYA
     countIN: movements.filter((m) => m.type === "IN").length,
     countOUT: movements.filter((m) => m.type === "OUT").length,
+  };
+}
+
+// 🔥 PROFIT SUMMARY (Daily/Weekly/Monthly/All)
+export async function getProfitSummary(startMs: number, endMs: number) {
+  const movements = await getMovementsByRange(startMs, endMs);
+  const outMovements = movements.filter((m) => m.type === "OUT");
+
+  const totalProfit = outMovements.reduce((s, m) => s + (m.profit || 0), 0);
+  const totalRevenue = outMovements.reduce((s, m) => s + (m.totalValue || 0), 0);
+  const totalCost = outMovements.reduce(
+    (s, m) => s + ((m.purchaseRate || 0) * m.quantity),
+    0
+  );
+  const totalQtySold = outMovements.reduce((s, m) => s + m.quantity, 0);
+
+  // Product-wise profit
+  const productMap = new Map<string, any>();
+  for (const m of outMovements) {
+    const key = m.barcode || m.productName;
+    if (!productMap.has(key)) {
+      productMap.set(key, {
+        barcode: m.barcode,
+        productName: m.productName,
+        qtySold: 0,
+        revenue: 0,
+        cost: 0,
+        profit: 0,
+      });
+    }
+    const row = productMap.get(key);
+    row.qtySold += m.quantity;
+    row.revenue += m.totalValue || 0;
+    row.cost += (m.purchaseRate || 0) * m.quantity;
+    row.profit += m.profit || 0;
+  }
+
+  const productWise = Array.from(productMap.values()).sort(
+    (a, b) => b.profit - a.profit
+  );
+
+  return {
+    totalProfit,
+    totalRevenue,
+    totalCost,
+    totalQtySold,
+    totalTransactions: outMovements.length,
+    productWise,
   };
 }
 
@@ -93,7 +142,7 @@ export async function getProductWiseSummary(startMs: number, endMs: number) {
       map.set(key, {
         barcode: m.barcode,
         productName: m.productName,
-        inQty: 0, outQty: 0, inValue: 0, outValue: 0,
+        inQty: 0, outQty: 0, inValue: 0, outValue: 0, profit: 0,
       });
     }
     const row = map.get(key);
@@ -103,6 +152,7 @@ export async function getProductWiseSummary(startMs: number, endMs: number) {
     } else {
       row.outQty += m.quantity;
       row.outValue += m.totalValue || 0;
+      row.profit += m.profit || 0;
     }
   }
   return Array.from(map.values()).sort((a: any, b: any) => b.outQty - a.outQty);

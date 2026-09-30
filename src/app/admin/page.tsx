@@ -13,7 +13,12 @@ import {
   getTopProducts,
 } from "@/lib/billDatabase";
 import { getProducts, deleteProduct, addProduct, increaseStock } from "@/lib/productDatabase";
-import { getAllMovements, getMovementsByRange, getDailySummary } from "@/lib/stockDatabase";
+import {
+  getAllMovements,
+  getMovementsByRange,
+  getDailySummary,
+  getProfitSummary,
+} from "@/lib/stockDatabase";
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -34,12 +39,16 @@ export default function AdminPage() {
   const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
   const [refreshing, setRefreshing] = useState(false);
 
-  // 🔥 NEW: Stock movement state
+  // 🔥 Stock movement state
   const [movements, setMovements] = useState<any[]>([]);
   const [stockSummary, setStockSummary] = useState<any>(null);
   const [stockView, setStockView] = useState<"today" | "week" | "month" | "all">("today");
   const [stockLoading, setStockLoading] = useState(false);
-  const [productWise, setProductWise] = useState<any[]>([]);
+
+  // 🔥 Profit state (NAYA)
+  const [profitSummary, setProfitSummary] = useState<any>(null);
+  const [profitView, setProfitView] = useState<"today" | "week" | "month" | "all">("today");
+  const [profitLoading, setProfitLoading] = useState(false);
 
   useEffect(() => {
     loadAll();
@@ -52,10 +61,14 @@ export default function AdminPage() {
     };
   }, []);
 
-  // 🔥 Load stock data when stock tab opens or view changes
   useEffect(() => {
     if (activeTab === "stock") loadStockData();
   }, [activeTab, stockView]);
+
+  // 🔥 Load profit data
+  useEffect(() => {
+    if (activeTab === "profit") loadProfitData();
+  }, [activeTab, profitView]);
 
   const loadAll = async (silent = false) => {
     try {
@@ -84,7 +97,6 @@ export default function AdminPage() {
     }
   };
 
-  // 🔥 LOAD STOCK DATA
   const loadStockData = async () => {
     setStockLoading(true);
     try {
@@ -121,6 +133,26 @@ export default function AdminPage() {
       console.error(err);
     } finally {
       setStockLoading(false);
+    }
+  };
+
+  // 🔥 LOAD PROFIT DATA
+  const loadProfitData = async () => {
+    setProfitLoading(true);
+    try {
+      const now = new Date();
+      let start = new Date();
+      if (profitView === "today") start.setHours(0, 0, 0, 0);
+      else if (profitView === "week") start.setDate(now.getDate() - 7);
+      else if (profitView === "month") start.setMonth(now.getMonth() - 1);
+      else start = new Date(0);
+
+      const data = await getProfitSummary(start.getTime(), now.getTime());
+      setProfitSummary(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setProfitLoading(false);
     }
   };
 
@@ -185,14 +217,16 @@ export default function AdminPage() {
     window.dispatchEvent(new Event("storage"));
   };
 
+  // ✅ UPDATED: purchaseRate bhi save karo
   const handleSaveProduct = async (product: any) => {
     if (!product?.name || !product?.rate) {
-      alert("Product name and rate are required.");
+      alert("Product name and selling rate are required.");
       return;
     }
     const finalProduct = {
       barcode: product.barcode || `GE-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       name: String(product.name).trim(),
+      purchaseRate: Number(product.purchaseRate) || 0,  // 🔥 NAYA
       rate: Number(product.rate) || 0,
       stock: Number(product.stock) || 0,
     };
@@ -208,7 +242,6 @@ export default function AdminPage() {
     }
   };
 
-  // 🔥 STOCK ADD (from products tab ➕ button)
   const handleAddStock = async (barcode: string, name: string) => {
     const qtyStr = prompt(`"${name}" ke liye kitna stock add karna hai?`);
     if (!qtyStr) return;
@@ -244,8 +277,8 @@ export default function AdminPage() {
 
   const exportProductsCSV = () => {
     const csv =
-      "Barcode,Name,Rate,Stock\n" +
-      products.map((p: any) => `${p.barcode},"${p.name}",${p.rate},${p.stock || 0}`).join("\n");
+      "Barcode,Name,PurchaseRate,SellingRate,Stock\n" +
+      products.map((p: any) => `${p.barcode},"${p.name}",${p.purchaseRate || 0},${p.rate},${p.stock || 0}`).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -254,14 +287,13 @@ export default function AdminPage() {
     a.click();
   };
 
-  // 🔥 STOCK CSV EXPORT
   const exportStockCSV = () => {
     const csv =
-      "Time,Type,Product,Barcode,Reason,Qty,Value,Note\n" +
+      "Time,Type,Product,Barcode,Reason,Qty,Rate,PurchaseRate,Profit,Value,Note\n" +
       movements
         .map(
           (m: any) =>
-            `"${new Date(m.createdAt).toLocaleString("en-IN")}",${m.type},"${m.productName}","${m.barcode}",${m.reason},${m.quantity},${m.totalValue || 0},"${m.note || ""}"`
+            `"${new Date(m.createdAt).toLocaleString("en-IN")}",${m.type},"${m.productName}","${m.barcode}",${m.reason},${m.quantity},${m.rate || 0},${m.purchaseRate || 0},${m.profit || 0},${m.totalValue || 0},"${m.note || ""}"`
         )
         .join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -359,6 +391,7 @@ export default function AdminPage() {
             { id: "customers", label: "Customers", icon: "👥", count: customers.length },
             { id: "products", label: "Products", icon: "📦", count: products.length },
             { id: "stock", label: "Stock In/Out", icon: "📈" },
+            { id: "profit", label: "Profit", icon: "💵" },  // 🔥 NAYA TAB
           ].map((tab) => (
             <button
               key={tab.id}
@@ -444,8 +477,8 @@ export default function AdminPage() {
                 <DrillCard title="Top Customers" subtitle="Best buyers" icon="🏆" color="bg-amber-500" onClick={() => handleDrillDown("customer")} />
                 <DrillCard title="Top Products" subtitle="Best sellers" icon="🔥" color="bg-red-500" onClick={() => handleDrillDown("product")} />
                 <DrillCard title="Stock In/Out" subtitle="Daily movement" icon="📈" color="bg-teal-500" onClick={() => setActiveTab("stock")} />
+                <DrillCard title="Profit Report" subtitle="Kitna kamaya" icon="💵" color="bg-emerald-500" onClick={() => setActiveTab("profit")} />
                 <DrillCard title="All Bills" subtitle="Full history" icon="🧾" color="bg-slate-600" onClick={() => setActiveTab("bills")} />
-                <DrillCard title="All Customers" subtitle="Complete list" icon="👥" color="bg-pink-500" onClick={() => setActiveTab("customers")} />
               </div>
             </section>
 
@@ -815,7 +848,9 @@ export default function AdminPage() {
                     <tr className="text-left text-xs text-slate-500 font-semibold uppercase tracking-wider">
                       <th className="px-4 py-3">Barcode</th>
                       <th className="px-4 py-3">Product Name</th>
-                      <th className="px-4 py-3 text-right">Rate</th>
+                      <th className="px-4 py-3 text-right">Purchase</th>
+                      <th className="px-4 py-3 text-right">Selling</th>
+                      <th className="px-4 py-3 text-right">Profit</th>
                       <th className="px-4 py-3 text-center">Stock</th>
                       <th className="px-4 py-3 text-center">Status</th>
                       <th className="px-4 py-3 text-center">Actions</th>
@@ -824,6 +859,7 @@ export default function AdminPage() {
                   <tbody className="divide-y divide-slate-100">
                     {filteredProducts.map((p: any) => {
                       const isLow = (p.stock || 0) < 10;
+                      const profit = (p.rate || 0) - (p.purchaseRate || 0);
                       return (
                         <tr key={p.barcode} className={`hover:bg-slate-50 transition-colors ${isLow ? "bg-amber-50/50" : ""}`}>
                           <td className="px-4 py-3">
@@ -832,8 +868,14 @@ export default function AdminPage() {
                             </span>
                           </td>
                           <td className="px-4 py-3 text-sm font-semibold text-slate-800">{p.name}</td>
+                          <td className="px-4 py-3 text-right text-sm text-amber-600">
+                            {p.purchaseRate ? formatCurrency(p.purchaseRate) : "-"}
+                          </td>
                           <td className="px-4 py-3 text-right text-sm font-bold text-red-600">
                             {formatCurrency(p.rate)}
+                          </td>
+                          <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">
+                            {p.purchaseRate ? formatCurrency(profit) : "-"}
                           </td>
                           <td className="px-4 py-3 text-center text-sm font-bold text-slate-700">
                             {p.stock || 0}
@@ -890,9 +932,7 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* ============================================================ */}
-        {/* 🔥 STOCK IN/OUT TAB (NEW) */}
-        {/* ============================================================ */}
+        {/* STOCK IN/OUT TAB */}
         {activeTab === "stock" && (
           <div className="space-y-6">
             <div className="flex flex-wrap justify-between items-center gap-3">
@@ -910,7 +950,6 @@ export default function AdminPage() {
               </button>
             </div>
 
-            {/* View selector */}
             <div className="flex gap-2 flex-wrap">
               {[
                 { id: "today", label: "Today", icon: "☀️" },
@@ -932,40 +971,31 @@ export default function AdminPage() {
               ))}
             </div>
 
-            {/* Summary cards */}
             {stockSummary && (
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                 <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-2xl p-5 text-white shadow-lg">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-100">
-                    📥 Stock IN
-                  </p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-100">📥 Stock IN</p>
                   <p className="text-3xl font-black mt-1">+{stockSummary.totalIN || 0}</p>
                   <p className="text-[10px] text-emerald-100 mt-1">
                     {stockSummary.countIN || 0} entries • {formatCurrency(stockSummary.valueIN || 0)}
                   </p>
                 </div>
                 <div className="bg-gradient-to-br from-red-500 to-red-700 rounded-2xl p-5 text-white shadow-lg">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-red-100">
-                    📤 Stock OUT
-                  </p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-red-100">📤 Stock OUT</p>
                   <p className="text-3xl font-black mt-1">-{stockSummary.totalOUT || 0}</p>
                   <p className="text-[10px] text-red-100 mt-1">
                     {stockSummary.countOUT || 0} entries • {formatCurrency(stockSummary.valueOUT || 0)}
                   </p>
                 </div>
                 <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-5 text-white shadow-lg">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-blue-100">
-                    Net Change
-                  </p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-blue-100">Net Change</p>
                   <p className="text-3xl font-black mt-1">
                     {(stockSummary.net || 0) >= 0 ? "+" : ""}{stockSummary.net || 0}
                   </p>
                   <p className="text-[10px] text-blue-100 mt-1">units</p>
                 </div>
                 <div className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-2xl p-5 text-white shadow-lg">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-purple-100">
-                    Net Value
-                  </p>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-purple-100">Net Value</p>
                   <p className="text-2xl font-black mt-1">
                     {formatCurrency((stockSummary.valueIN || 0) - (stockSummary.valueOUT || 0))}
                   </p>
@@ -974,7 +1004,6 @@ export default function AdminPage() {
               </div>
             )}
 
-            {/* Current stock overview (kitna bacha) */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 flex justify-between items-center">
                 <h3 className="text-sm font-bold text-slate-800">
@@ -1038,7 +1067,6 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Movements log */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-4 border-b border-slate-100 flex justify-between items-center">
                 <h3 className="text-sm font-bold text-slate-800">
@@ -1113,20 +1141,157 @@ export default function AdminPage() {
               </div>
             </div>
 
-            {/* Info box */}
             <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
               <p className="text-xs text-blue-800 font-semibold mb-1">💡 Kaise kaam karta hai:</p>
               <ul className="text-xs text-blue-700 space-y-1 list-disc list-inside">
-                <li>
-                  <b>IN</b> — jab naya product add karo (initial stock), ya "➕" button se stock badhao
-                </li>
-                <li>
-                  <b>OUT</b> — jab billing page se bill save karo (sale), stock automatically kam hota hai
-                </li>
+                <li><b>IN</b> — jab naya product add karo (initial stock), ya "➕" button se stock badhao</li>
+                <li><b>OUT</b> — jab billing page se bill save karo (sale), stock automatically kam hota hai</li>
                 <li>Har movement yahan date + time ke saath record hoti hai</li>
                 <li>Daily basis pe dekhne ke liye "Today" select karo</li>
               </ul>
             </div>
+          </div>
+        )}
+
+        {/* ============================================================ */}
+        {/* 🔥 PROFIT TAB (NAYA) */}
+        {/* ============================================================ */}
+        {activeTab === "profit" && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap justify-between items-center gap-3">
+              <div>
+                <h2 className="text-lg font-bold text-slate-800">💵 Profit Report</h2>
+                <p className="text-xs text-slate-500">
+                  Purchase rate vs selling rate ka difference — kitna profit hua
+                </p>
+              </div>
+            </div>
+
+            {/* View selector */}
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { id: "today", label: "Today", icon: "☀️" },
+                { id: "week", label: "Last 7 Days", icon: "📅" },
+                { id: "month", label: "Last 30 Days", icon: "📆" },
+                { id: "all", label: "All Time", icon: "📈" },
+              ].map((v: any) => (
+                <button
+                  key={v.id}
+                  onClick={() => setProfitView(v.id)}
+                  className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all ${
+                    profitView === v.id
+                      ? "bg-gradient-to-r from-red-600 to-red-700 text-white shadow-lg shadow-red-200"
+                      : "bg-white text-slate-600 border border-slate-200 hover:border-red-300"
+                  }`}
+                >
+                  {v.icon} {v.label}
+                </button>
+              ))}
+            </div>
+
+            {profitLoading && (
+              <div className="text-center py-8 text-slate-400">Loading profit data...</div>
+            )}
+
+            {profitSummary && (
+              <>
+                {/* Summary cards */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="bg-gradient-to-br from-emerald-500 to-emerald-700 rounded-2xl p-5 text-white shadow-lg">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-100">💰 Total Profit</p>
+                    <p className="text-3xl font-black mt-1">{formatCurrency(profitSummary.totalProfit)}</p>
+                    <p className="text-[10px] text-emerald-100 mt-1">{profitSummary.totalTransactions} sales</p>
+                  </div>
+                  <div className="bg-gradient-to-br from-blue-500 to-blue-700 rounded-2xl p-5 text-white shadow-lg">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-blue-100">📈 Total Revenue</p>
+                    <p className="text-2xl font-black mt-1">{formatCurrency(profitSummary.totalRevenue)}</p>
+                    <p className="text-[10px] text-blue-100 mt-1">selling value</p>
+                  </div>
+                  <div className="bg-gradient-to-br from-amber-500 to-orange-600 rounded-2xl p-5 text-white shadow-lg">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-amber-100">💸 Total Cost</p>
+                    <p className="text-2xl font-black mt-1">{formatCurrency(profitSummary.totalCost)}</p>
+                    <p className="text-[10px] text-amber-100 mt-1">purchase value</p>
+                  </div>
+                  <div className="bg-gradient-to-br from-purple-500 to-purple-700 rounded-2xl p-5 text-white shadow-lg">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-purple-100">📦 Qty Sold</p>
+                    <p className="text-3xl font-black mt-1">{profitSummary.totalQtySold}</p>
+                    <p className="text-[10px] text-purple-100 mt-1">units</p>
+                  </div>
+                </div>
+
+                {/* Product-wise profit table */}
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="p-4 border-b border-slate-100">
+                    <h3 className="text-sm font-bold text-slate-800">
+                      🏆 Product-wise Profit ({profitSummary.productWise.length})
+                    </h3>
+                  </div>
+                  <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                    <table className="w-full">
+                      <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                        <tr className="text-left text-xs text-slate-500 font-semibold uppercase tracking-wider">
+                          <th className="px-4 py-3">Product</th>
+                          <th className="px-4 py-3 text-center">Qty Sold</th>
+                          <th className="px-4 py-3 text-right">Revenue</th>
+                          <th className="px-4 py-3 text-right">Cost</th>
+                          <th className="px-4 py-3 text-right">Profit</th>
+                          <th className="px-4 py-3 text-center">Margin %</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {profitSummary.productWise.map((p: any, idx: number) => {
+                          const margin = p.revenue > 0 ? (p.profit / p.revenue) * 100 : 0;
+                          return (
+                            <tr key={idx} className="hover:bg-slate-50">
+                              <td className="px-4 py-3 text-sm font-semibold text-slate-800">{p.productName}</td>
+                              <td className="px-4 py-3 text-center font-bold text-slate-700">{p.qtySold}</td>
+                              <td className="px-4 py-3 text-right text-sm font-bold text-blue-600">
+                                {formatCurrency(p.revenue)}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm text-amber-600">
+                                {formatCurrency(p.cost)}
+                              </td>
+                              <td className="px-4 py-3 text-right text-sm font-bold text-emerald-600">
+                                {formatCurrency(p.profit)}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className={`inline-block px-2 py-1 rounded-full text-[10px] font-bold ${
+                                  margin >= 20 ? "bg-emerald-100 text-emerald-700" :
+                                  margin >= 10 ? "bg-amber-100 text-amber-700" :
+                                  "bg-red-100 text-red-700"
+                                }`}>
+                                  {margin.toFixed(1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                        {profitSummary.productWise.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="text-center py-16 text-slate-400">
+                              <p className="text-4xl mb-2">📭</p>
+                              <p className="text-sm font-medium">No profit data yet</p>
+                              <p className="text-xs mt-1">Bill save karo — profit yahan aayega</p>
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Info box */}
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-4">
+                  <p className="text-xs text-emerald-800 font-semibold mb-1">💡 Profit Calculation:</p>
+                  <ul className="text-xs text-emerald-700 space-y-1 list-disc list-inside">
+                    <li><b>Purchase Rate</b> — jo tumne dukandaar ko diya</li>
+                    <li><b>Selling Rate</b> — jo customer se liya</li>
+                    <li><b>Profit per unit</b> = Selling - Purchase</li>
+                    <li><b>Total Profit</b> = Profit per unit × Quantity sold</li>
+                  </ul>
+                </div>
+              </>
+            )}
           </div>
         )}
       </main>
@@ -1163,9 +1328,7 @@ function StatCard({ title, value, subtitle, gradient, icon, onClick }: any) {
       className={`bg-gradient-to-br ${gradient} rounded-2xl p-5 shadow-lg hover:shadow-xl transition-all duration-300 hover:-translate-y-0.5 relative overflow-hidden text-left w-full`}
     >
       <div className="absolute top-3 right-3 text-3xl opacity-20">{icon}</div>
-      <p className="text-[10px] text-white/80 font-bold uppercase tracking-wider mb-1">
-        {title}
-      </p>
+      <p className="text-[10px] text-white/80 font-bold uppercase tracking-wider mb-1">{title}</p>
       <p className="text-2xl font-bold text-white mb-1">{value}</p>
       <p className="text-[10px] text-white/70 font-medium">{subtitle}</p>
     </button>
@@ -1707,18 +1870,24 @@ function CustomerDetailModal({ customer, onClose, formatCurrency, formatDate }: 
 }
 
 // ============================================================
-// PRODUCT MODAL
+// ✅ UPDATED PRODUCT MODAL (with purchase rate)
 // ============================================================
 function ProductModal({ product, onClose, onSave }: any) {
   const [form, setForm] = useState({
     barcode: product?.barcode || "",
     name: product?.name || "",
+    purchaseRate: product?.purchaseRate || "",  // 🔥 NAYA
     rate: product?.rate || "",
     stock: product?.stock || "",
   });
 
   const update = (key: string, val: any) =>
     setForm((f) => ({ ...f, [key]: val }));
+
+  const profit = Number(form.rate) - Number(form.purchaseRate);
+  const profitMargin = form.purchaseRate && Number(form.purchaseRate) > 0
+    ? (profit / Number(form.purchaseRate)) * 100
+    : 0;
 
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
@@ -1729,7 +1898,7 @@ function ProductModal({ product, onClose, onSave }: any) {
               {product ? "Edit Product" : "Add New Product"}
             </h2>
             <p className="text-xs text-slate-500">
-              {product ? "Update product info" : "Fill in the details"}
+              Purchase + Selling rate dono bharo
             </p>
           </div>
           <button onClick={onClose} className="w-9 h-9 bg-slate-100 hover:bg-slate-200 rounded-xl flex items-center justify-center">✕</button>
@@ -1751,7 +1920,7 @@ function ProductModal({ product, onClose, onSave }: any) {
             <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Product Name *</label>
             <input
               type="text"
-              placeholder="e.g. Amul Butter 500g"
+              placeholder="e.g. Tv"
               className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
               value={form.name}
               onChange={(e) => update("name", e.target.value)}
@@ -1760,25 +1929,49 @@ function ProductModal({ product, onClose, onSave }: any) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Rate (₹) *</label>
+              <label className="text-xs font-semibold text-amber-600 mb-1.5 block">
+                💰 Purchase Rate (₹)
+              </label>
               <input
                 type="number"
-                placeholder="0"
-                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+                placeholder="485"
+                className="w-full px-3 py-2.5 bg-amber-50 border-2 border-amber-200 focus:border-amber-400 rounded-xl outline-none text-sm"
+                value={form.purchaseRate}
+                onChange={(e) => update("purchaseRate", e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-emerald-600 mb-1.5 block">
+                🏷️ Selling Rate (₹) *
+              </label>
+              <input
+                type="number"
+                placeholder="500"
+                className="w-full px-3 py-2.5 bg-emerald-50 border-2 border-emerald-200 focus:border-emerald-400 rounded-xl outline-none text-sm"
                 value={form.rate}
                 onChange={(e) => update("rate", e.target.value)}
               />
             </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Stock</label>
-              <input
-                type="number"
-                placeholder="0"
-                className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
-                value={form.stock}
-                onChange={(e) => update("stock", e.target.value)}
-              />
+          </div>
+
+          {form.purchaseRate && form.rate && profit > 0 && (
+            <div className="bg-gradient-to-r from-emerald-50 to-green-50 border border-emerald-200 rounded-xl p-3">
+              <p className="text-xs text-emerald-700">
+                💵 <b>Profit per unit:</b> {formatCurrency(profit)}
+                <span className="text-emerald-600 ml-2">({profitMargin.toFixed(1)}%)</span>
+              </p>
             </div>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Stock</label>
+            <input
+              type="number"
+              placeholder="0"
+              className="w-full px-3 py-2.5 bg-slate-50 border-2 border-slate-200 focus:border-red-400 rounded-xl outline-none text-sm"
+              value={form.stock}
+              onChange={(e) => update("stock", e.target.value)}
+            />
           </div>
         </div>
 
@@ -1796,4 +1989,11 @@ function ProductModal({ product, onClose, onSave }: any) {
       </div>
     </div>
   );
+}
+
+// formatCurrency helper for ProductModal
+function formatCurrency(amount: number) {
+  return "₹" + Number(amount || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  });
 }
