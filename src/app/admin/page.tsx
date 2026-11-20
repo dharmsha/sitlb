@@ -355,7 +355,7 @@ export default function AdminPage() {
             <div>
               <h1 className="text-lg font-bold text-slate-900 tracking-tight">Admin Dashboard</h1>
               <p className="text-xs text-slate-500 font-medium flex items-center gap-2">
-                Ghanshyam Enterprises
+                Ambe Electric
                 <span className="text-slate-300">•</span>
                 <span className={refreshing ? "text-amber-500" : "text-emerald-500"}>
                   {refreshing ? "🔄 Syncing..." : "🟢 Live"}

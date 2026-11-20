@@ -16,9 +16,9 @@ import { saveBill as saveBillToFirebase } from '@/lib/billDatabase';
 
 export default function BillingPage() {
   const [billData, setBillData] = useState({
-    shopName: 'Ghanshyam Enterprises',
+    shopName: 'Ambe Electric',
     shopSubtitle: 'Fresh & Daily Needs',
-    shopAddress: 'Ghanshyam Enterprises Sitalpur Parsa Road',
+    shopAddress: 'Ambe Electric Sitalpur Parsa Road',
     shopPhone: '+91 7319893327',
     shopEmail: 'enterpriseghanshyam8@gmail.com',
     customerName: '',
@@ -682,7 +682,7 @@ export default function BillingPage() {
               <span className="text-lg">🛍️</span>
             </div>
             <div>
-              <span className="text-lg font-black text-white">Ghanshyam <span className="text-red-500">Enterprises</span></span>
+              <span className="text-lg font-black text-white">Ambe<span className="text-red-500">Electric</span></span>
               <span className={`block text-[10px] font-bold ${
                 dbStatus === 'connected' ? 'text-green-400' :
                 dbStatus === 'error' ? 'text-red-400' : 'text-amber-400'

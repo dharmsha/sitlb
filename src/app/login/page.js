@@ -42,7 +42,7 @@ export default function LoginPage() {
             <span className="text-3xl">🛍️</span>
           </div>
           <h1 className="text-3xl font-black text-slate-900">
-            Ghanshyam <span className="text-red-600">Enterprises</span>
+            Ambe <span className="text-red-600">Electric</span>
           </h1>
           <p className="text-xs text-slate-500 font-medium mt-1">Billing System — Secure Login</p>
         </div>
@@ -105,7 +105,7 @@ export default function LoginPage() {
         </form>
 
         <p className="text-[10px] text-slate-400 text-center mt-4">
-          © 2026 Ghanshyam Enterprises — All rights reserved
+          © 2026 Ambe Electric — All rights reserved
         </p>
       </div>
     </div>

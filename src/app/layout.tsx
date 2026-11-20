@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ghanshyam Enterprises - Billing System",
-  description: "Billing system for Ghanshyam Enterprises",
+  title: "Ambe Electric - Billing System",
+  description: "Billing system for Ambe Electric",
 };
 
 export default function RootLayout({
